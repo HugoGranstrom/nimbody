@@ -10,8 +10,7 @@
  *
  */
 ]#
-import math, times
-import weave
+import std/[math, times, monotimes, strformat]
 
 type
     Planet = object
@@ -80,6 +79,44 @@ proc fscanf(f: File, s: cstring)
     importc: "fscanf",
     header: "<stdio.h>".}
 
+proc simul_mono(n, N: int, bodies, bodies2: var seq[Planet], dt: float64) =
+
+  let bodies_ptr = cast[ptr UncheckedArray[Planet]](bodies[0].unsafeAddr)
+  let bodies2_ptr = cast[ptr UncheckedArray[Planet]](bodies2[0].unsafeAddr)
+
+  echo "Simulating ", N, " bodies for ", n, " timesteps"
+  offset_momentum(N, bodies)
+  echo energy(N, bodies)
+  let startTime = getMonotime()
+  for i in 0 ..< n:
+      for j in 0 ..< N:
+          advance(bodies_ptr, bodies2_ptr, j, N, i mod 2, dt)
+  let endTime = getMonotime()
+  let elapsed = inMilliseconds(endTime - startTime)
+  echo &"Elapsed wall time (single-threaded): {elapsed:>6} ms ({elapsed.float64/n.float64:>6.3f} ms per iteration)"
+
+when compileOption("threads"):
+  import weave, cpuinfo
+
+  proc simul_weave(n, N: int, bodies, bodies2: var seq[Planet], dt: float64) =
+
+    let bodies_ptr = cast[ptr UncheckedArray[Planet]](bodies[0].unsafeAddr)
+    let bodies2_ptr = cast[ptr UncheckedArray[Planet]](bodies2[0].unsafeAddr)
+
+    init(Weave)
+    echo "Simulating ", N, " bodies for ", n, " timesteps"
+    offset_momentum(N, bodies)
+    echo energy(N, bodies)
+    let startTime = getMonotime()
+    for i in 0 ..< n:
+        parallelFor j in 0 ..< N:
+            captures: {bodies_ptr, bodies2_ptr, N, i, dt}
+            advance(bodies_ptr, bodies2_ptr, j, N, i mod 2, dt)
+        syncRoot(Weave)
+    let endTime = getMonotime()
+    let elapsed = inMilliseconds(endTime - startTime)
+    echo &"Elapsed wall time (Weave): {elapsed:>6} ms ({elapsed.float64/n.float64:>6.3f} ms per iteration)"
+
 proc main() =
     let dt = 0.001
     let n = 1000 # number of iterations
@@ -119,21 +156,10 @@ proc main() =
         bodies[i].vz = float(a)
     input.close()
     var bodies2 = bodies # copy?
-    var bodies_ptr = cast[ptr UncheckedArray[Planet]](bodies[0].unsafeAddr)
-    var bodies2_ptr = cast[ptr UncheckedArray[Planet]](bodies2[0].unsafeAddr)
-    init(Weave)
-    echo "Simulating ", N, " bodies for ", n, " timesteps"
-    offset_momentum(N, bodies)
-    echo energy(N, bodies)
-    let startTime = cpuTime()
-    for i in 0 ..< n:
-        parallelFor j in 0 ..< N:
-            captures: {bodies_ptr, bodies2_ptr, N, i, dt}
-            advance(bodies_ptr, bodies2_ptr, j, N, i mod 2, dt)
-        syncRoot(Weave)
-    let endTime = cpuTime()
-    exit(Weave)
-    echo "Elapsed wall time: ", (endTime - startTime)*1000, " ms (", (endTime - startTime)*1000.0/n.toFloat, " ms per iteration)"
+
+    simul_mono(n, N, bodies, bodies2, dt)
+    simul_weave(n, N, bodies, bodies2, dt)
+
     echo energy(N, bodies)
 
 main()
